@@ -130,7 +130,8 @@
     .user-last-msg { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
     .user-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; flex-shrink: 0; }
-    .user-count { background: #7c3aed; color: white; font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 700; }
+    .user-count { background: #7c3aed; color: white; font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 700; min-width: 18px; text-align: center; }
+    .user-count.zero { background: #334155; }
     
     .delete-btn {
       background: rgba(239, 68, 68, 0.15);
@@ -275,6 +276,38 @@
 
   let allChats = [];
   let activeUser = null;
+  // Remembers each user's last scroll position so reopening a chat
+  // continues from where you left off, instead of jumping to the top.
+  let scrollPositions = {};
+  // Tracks how many messages (out of that user's total) have actually
+  // been scrolled past/seen. The sidebar badge shows the REMAINING
+  // unread count, not the total message count.
+  let readCounts = {};
+
+  function getUnreadCount(username, total) {
+    const seen = readCounts[username] || 0;
+    return Math.max(0, total - seen);
+  }
+
+  function updateUnreadBadge(username, total) {
+    const badge = document.getElementById('count-' + username);
+    if (!badge) return;
+    const unread = getUnreadCount(username, total);
+    badge.textContent = unread;
+    badge.classList.toggle('zero', unread === 0);
+  }
+
+  // Recomputes how many messages have been seen based on current scroll
+  // position (how far down the chat the admin has scrolled) and bumps
+  // the running "seen" high-water mark for that user.
+  function trackReadProgress(username, total, msgs) {
+    const ratio = msgs.scrollHeight <= msgs.clientHeight
+      ? 1
+      : (msgs.scrollTop + msgs.clientHeight) / msgs.scrollHeight;
+    const seenNow = Math.min(total, Math.ceil(ratio * total));
+    readCounts[username] = Math.max(readCounts[username] || 0, seenNow);
+    updateUnreadBadge(username, total);
+  }
 
   function formatTime(raw) {
     if (!raw) return "";
@@ -330,6 +363,7 @@
             const chats = grouped[username];
             const last = chats[chats.length - 1];
             const initial = username.charAt(0).toUpperCase();
+            const unread = getUnreadCount(username, chats.length);
             return `
               <div class="user-card" id="card-${username}" onclick="showChat('${username}')" data-username="${username.toLowerCase()}">
                 <div class="user-avatar">${initial}</div>
@@ -338,7 +372,7 @@
                   <div class="user-last-msg">${last.user_message}</div>
                 </div>
                 <div class="user-meta">
-                  <span class="user-count">${chats.length}</span>
+                  <span class="user-count${unread === 0 ? ' zero' : ''}" id="count-${username}">${unread}</span>
                   <button class="delete-btn" onclick="deleteUser(event, '${username}')"><i class="fa-solid fa-trash"></i></button>
                 </div>
               </div>
@@ -367,6 +401,14 @@
   }
 
   function showChat(username) {
+    // Save the scroll position of whichever chat is currently open
+    // before switching away from it (covers both switching users
+    // and re-rendering the same user after new data loads).
+    const prevMsgs = document.getElementById("chatMessages");
+    if (prevMsgs && activeUser) {
+      scrollPositions[activeUser] = prevMsgs.scrollTop;
+    }
+
     activeUser = username;
 
     document.querySelectorAll(".user-card").forEach(c => c.classList.remove("active"));
@@ -380,6 +422,7 @@
     });
 
     const chats = grouped[username] || [];
+    const total = chats.length;
     const initial = username.charAt(0).toUpperCase();
 
     const chatView = document.getElementById("chatView");
@@ -391,7 +434,7 @@
         <div class="chat-header-avatar">${initial}</div>
         <div>
           <div class="chat-header-name">${username}</div>
-          <div class="chat-header-msgs">${chats.length} messages trace found</div>
+          <div class="chat-header-msgs">${total} messages trace found</div>
         </div>
       </div>
       <div class="chat-messages" id="chatMessages">
@@ -410,10 +453,28 @@
     `;
 
     const msgs = document.getElementById("chatMessages");
-    if (msgs) msgs.scrollTop = msgs.scrollHeight;
+    if (msgs) {
+      // First time opening this user's chat -> start from the top (message 1).
+      // Reopening later -> jump back to exactly where you last scrolled to.
+      msgs.scrollTop = scrollPositions.hasOwnProperty(username) ? scrollPositions[username] : 0;
+
+      // Update the unread badge right away based on wherever we just
+      // landed (covers short chats that fit fully on screen too).
+      trackReadProgress(username, total, msgs);
+
+      // Keep tracking read progress live as the admin scrolls.
+      msgs.addEventListener('scroll', () => {
+        scrollPositions[username] = msgs.scrollTop;
+        trackReadProgress(username, total, msgs);
+      });
+    }
   }
 
   function goBack() {
+    const msgs = document.getElementById("chatMessages");
+    if (msgs && activeUser) {
+      scrollPositions[activeUser] = msgs.scrollTop;
+    }
     const chatView = document.getElementById("chatView");
     chatView.classList.remove("mobile-show");
     activeUser = null;
@@ -432,6 +493,8 @@
       if (data.success) {
         allChats = allChats.filter(c => c.username !== username);
         if (activeUser === username) activeUser = null;
+        delete scrollPositions[username];
+        delete readCounts[username];
         renderPanel();
       }
     })
