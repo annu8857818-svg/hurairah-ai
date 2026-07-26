@@ -16,6 +16,13 @@ let isTyping = false;
 let recognition = null;
 let hurairahMode = false;
 
+// TTS state — tracks whatever is currently speaking (ElevenLabs audio OR
+// browser speechSynthesis) so a new "Sunao" tap always stops the old one
+// first instead of letting them overlap/loop.
+let currentAudio = null;
+let currentUtterance = null;
+let currentSpeakBtn = null;
+
 // ── INIT ─────────────────────────────────────────────────────
 window.addEventListener("DOMContentLoaded", () => {
   loadHistory();
@@ -319,10 +326,41 @@ function copyCode(id, btn) {
 }
 
 // ── TTS (ElevenLabs) — sirf button dabane par ────────────────
+// FIX: pehle se chal rahi koi bhi audio/speech (ElevenLabs ya browser
+// fallback) turant band karo, tabhi nayi shuru karo — isse do awaazein
+// kabhi overlap/loop nahi hongi. Fallback speech khatam hone tak bhi
+// button disabled rakha jata hai (pehle turant enable ho jata tha).
+function stopAnySpeech() {
+  if (currentAudio) {
+    try { currentAudio.pause(); currentAudio.currentTime = 0; } catch (e) {}
+    currentAudio = null;
+  }
+  if (window.speechSynthesis) {
+    speechSynthesis.cancel();
+  }
+  currentUtterance = null;
+  if (currentSpeakBtn) {
+    currentSpeakBtn.textContent = "🔊 Sunao";
+    currentSpeakBtn.disabled = false;
+  }
+  currentSpeakBtn = null;
+}
+
 async function speakText(btn, text) {
   const plain = text.replace(/<[^>]+>/g, "").trim();
   if (!plain) return;
 
+  // Agar isi button pe dobara tap kiya (jab wo already bol raha hai), toh
+  // sirf rok do — dobara se mat bolo.
+  if (currentSpeakBtn === btn) {
+    stopAnySpeech();
+    return;
+  }
+
+  // Koi aur awaaz chal rahi ho toh pehle wo band karo.
+  stopAnySpeech();
+
+  currentSpeakBtn = btn;
   btn.textContent = "⏳ Loading...";
   btn.disabled = true;
 
@@ -345,18 +383,40 @@ async function speakText(btn, text) {
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
+    audio.loop = false;
+    currentAudio = audio;
+
     audio.play();
     btn.textContent = "🔊 Bol raha hai...";
+
     audio.onended = () => {
+      URL.revokeObjectURL(url);
+      if (currentAudio === audio) {
+        currentAudio = null;
+        currentSpeakBtn = null;
+      }
       btn.textContent = "🔊 Sunao";
       btn.disabled = false;
     };
   } catch (e) {
+    // Fallback: browser ki apni TTS. Button ko speech khatam hone tak
+    // disabled rakho — pehle yahan turant enable ho jata tha jisse
+    // dobara tap karne par overlapping/loop jaisa sound ban jata tha.
     const utter = new SpeechSynthesisUtterance(plain.slice(0, 500));
     utter.lang = "hi-IN";
+    currentUtterance = utter;
+    btn.textContent = "🔊 Bol raha hai...";
+
+    utter.onend = utter.onerror = () => {
+      if (currentUtterance === utter) {
+        currentUtterance = null;
+        currentSpeakBtn = null;
+      }
+      btn.textContent = "🔊 Sunao";
+      btn.disabled = false;
+    };
+
     speechSynthesis.speak(utter);
-    btn.textContent = "🔊 Sunao";
-    btn.disabled = false;
   }
 }
 
