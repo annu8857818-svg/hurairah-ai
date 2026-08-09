@@ -1,5 +1,5 @@
 // ============================================================
-// HURAIRAH AI — script.js (COMPLETE)
+// HURAIRAH AI — script.js (COMPLETE, FIXED: sends chat history)
 // ============================================================
 
 // ── CONFIG ──────────────────────────────────────────────────
@@ -194,12 +194,20 @@ async function handleAIResponse(text, imgData = null) {
   chatHistory.push({ role: "user", content: text });
   if (chatHistory.length > 40) chatHistory.splice(0, 2);
 
+  // FIX: send prior conversation turns to the worker so it can pass them
+  // to the model. Without this, every request looked like a brand-new
+  // conversation and the AI "forgot" everything instantly.
+  // We exclude the current message (already in `message`) and cap it to
+  // the last 20 turns to keep the payload small.
+  const historyToSend = chatHistory.slice(0, -1).slice(-20);
+
   try {
     const response = await fetch(WORKER_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         message: text,
+        history: historyToSend,
         username: userName || "GuestUser",
         image: imgData || null,
         hurairahMode: false
@@ -326,10 +334,6 @@ function copyCode(id, btn) {
 }
 
 // ── TTS (ElevenLabs) — sirf button dabane par ────────────────
-// FIX: pehle se chal rahi koi bhi audio/speech (ElevenLabs ya browser
-// fallback) turant band karo, tabhi nayi shuru karo — isse do awaazein
-// kabhi overlap/loop nahi hongi. Fallback speech khatam hone tak bhi
-// button disabled rakha jata hai (pehle turant enable ho jata tha).
 function stopAnySpeech() {
   if (currentAudio) {
     try { currentAudio.pause(); currentAudio.currentTime = 0; } catch (e) {}
@@ -350,14 +354,11 @@ async function speakText(btn, text) {
   const plain = text.replace(/<[^>]+>/g, "").trim();
   if (!plain) return;
 
-  // Agar isi button pe dobara tap kiya (jab wo already bol raha hai), toh
-  // sirf rok do — dobara se mat bolo.
   if (currentSpeakBtn === btn) {
     stopAnySpeech();
     return;
   }
 
-  // Koi aur awaaz chal rahi ho toh pehle wo band karo.
   stopAnySpeech();
 
   currentSpeakBtn = btn;
@@ -399,9 +400,6 @@ async function speakText(btn, text) {
       btn.disabled = false;
     };
   } catch (e) {
-    // Fallback: browser ki apni TTS. Button ko speech khatam hone tak
-    // disabled rakho — pehle yahan turant enable ho jata tha jisse
-    // dobara tap karne par overlapping/loop jaisa sound ban jata tha.
     const utter = new SpeechSynthesisUtterance(plain.slice(0, 500));
     utter.lang = "hi-IN";
     currentUtterance = utter;
@@ -617,6 +615,14 @@ async function sendHurairahMessage() {
   chatBox.appendChild(uDiv);
   scrollBottom("hurairahChatBox");
 
+  // FIX: user's own message was never being added to hurairahHistory
+  // before (only the bot's reply was) — so the worker never saw what
+  // Mehajabeen actually said in earlier turns either.
+  hurairahHistory.push({ role: "user", content: text });
+  if (hurairahHistory.length > 40) hurairahHistory.splice(0, 2);
+
+  const historyToSend = hurairahHistory.slice(0, -1).slice(-20);
+
   // Thinking dots
   const thinkEl = document.createElement("div");
   thinkEl.className = "h-thinking";
@@ -631,6 +637,7 @@ async function sendHurairahMessage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         message: text,
+        history: historyToSend,
         username: "Mehajabeen",
         hurairahMode: true
       })
@@ -661,6 +668,7 @@ async function sendHurairahMessage() {
     bDiv.className = "h-msg h-bot";
     bDiv.textContent = "⚠️ Network gadbad hai jaan...";
     chatBox.appendChild(bDiv);
+    hurairahHistory.pop();
   }
 
   isTyping = false;
@@ -706,7 +714,6 @@ function showMehajabeenAnimation() {
   document.body.appendChild(overlay);
 
   spawnHeartsIn(document.getElementById("mehajabeenHearts"));
-  // 🔇 Voice yahan se hata di gayi hai — koi sound nahi bajegi
 }
 
 function closeMehajabeenAnimation() {
